@@ -50,6 +50,9 @@ func ToProtoUser(mu *MemoryUser) *User {
 type MemoryUser struct {
 	// Account is the parsed account of the protocol.
 	Account Account
-	Email   string
-	Level   uint32
+	// Email is the user's unique identity string used for stats, routing and logging.
+	// It may contain an actual email address, a username, or any other identifier.
+	// In external-auth mode, it is overwritten with the auth center's identity after authentication.
+	Email string
+	Level uint32
 }

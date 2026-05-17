@@ -27,6 +27,9 @@
 *.gz
 *.bz2
 
+# Local test config (contains secrets)
+config.test.json
+
 # Go build binaries
 xray
 xray_softfloat

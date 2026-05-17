@@ -46,6 +46,8 @@ type Inbound struct {
 	// Name of the inbound proxy that handles the connection.
 	Name string
 	// User is the user that authenticates for the inbound. May be nil if the protocol allows anonymous traffic.
+	// In external-auth mode, User.Email is overwritten with the identity returned by the auth center,
+	// making it the single source of truth for all downstream consumers (stats, routing, logging, webhook).
 	User *protocol.MemoryUser
 	// VlessRoute is the user-sent VLESS UUID's 7th<<8 | 8th bytes.
 	VlessRoute net.Port

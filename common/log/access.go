@@ -25,6 +25,7 @@ type AccessMessage struct {
 	To     interface{}
 	Status AccessStatus
 	Reason interface{}
+	// Email is the user identity string (may be an email, username, or any identifier).
 	Email  string
 	Detour string
 }
