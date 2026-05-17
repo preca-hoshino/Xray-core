@@ -18,6 +18,7 @@ import (
 	_ "github.com/xtls/xray-core/app/observatory/command"
 
 	// Other optional features.
+	_ "github.com/xtls/xray-core/app/auth"
 	_ "github.com/xtls/xray-core/app/dns"
 	_ "github.com/xtls/xray-core/app/dns/fakedns"
 	_ "github.com/xtls/xray-core/app/geodata"
@@ -27,6 +28,7 @@ import (
 	_ "github.com/xtls/xray-core/app/reverse"
 	_ "github.com/xtls/xray-core/app/router"
 	_ "github.com/xtls/xray-core/app/stats"
+	_ "github.com/xtls/xray-core/app/trafficstats"
 
 	// Fix dependency cycle caused by core import in internet package
 	_ "github.com/xtls/xray-core/transport/internet/tagged/taggedimpl"

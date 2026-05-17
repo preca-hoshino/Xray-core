@@ -362,6 +362,8 @@ type Config struct {
 	BurstObservatory *BurstObservatoryConfig `json:"burstObservatory"`
 	Version          *VersionConfig          `json:"version"`
 	Geodata          *GeodataConfig          `json:"geodata"`
+	Auth             *AuthConfig             `json:"auth"`
+	TrafficStats     *TrafficStatsConfig     `json:"trafficStats"`
 }
 
 func (c *Config) findInboundTag(tag string) int {
@@ -436,6 +438,14 @@ func (c *Config) Override(o *Config, fn string) {
 
 	if o.Geodata != nil {
 		c.Geodata = o.Geodata
+	}
+
+	if o.Auth != nil {
+		c.Auth = o.Auth
+	}
+
+	if o.TrafficStats != nil {
+		c.TrafficStats = o.TrafficStats
 	}
 
 	// update the Inbound in slice if the only one in override config has same tag
@@ -591,6 +601,22 @@ func (c *Config) Build() (*core.Config, error) {
 		r, err := c.Geodata.Build()
 		if err != nil {
 			return nil, errors.New("failed to build geodata configuration").Base(err)
+		}
+		config.App = append(config.App, serial.ToTypedMessage(r))
+	}
+
+	if c.Auth != nil {
+		r, err := c.Auth.Build()
+		if err != nil {
+			return nil, errors.New("failed to build auth configuration").Base(err)
+		}
+		config.App = append(config.App, serial.ToTypedMessage(r))
+	}
+
+	if c.TrafficStats != nil {
+		r, err := c.TrafficStats.Build()
+		if err != nil {
+			return nil, errors.New("failed to build traffic stats configuration").Base(err)
 		}
 		config.App = append(config.App, serial.ToTypedMessage(r))
 	}
