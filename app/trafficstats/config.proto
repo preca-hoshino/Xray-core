@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package xray.app.trafficstats;
+option go_package = "github.com/xtls/xray-core/app/trafficstats";
+
+message Config {
+  string listen = 1;
+  string secret = 2;
+}

@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package xray.app.auth;
+option go_package = "github.com/xtls/xray-core/app/auth";
+
+message Config {
+  string auth_url = 1;
+  string node_token = 2;
+  string node_id = 3;
+  string protocol = 4;
+  int64 timeout = 5;
+}
