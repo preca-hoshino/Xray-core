@@ -137,6 +137,17 @@ func (*DefaultDispatcher) Start() error {
 // Close implements common.Closable.
 func (*DefaultDispatcher) Close() error { return nil }
 
+// effectiveIdentity returns the user identity for traffic stats.
+// In pure external auth mode, inbound.User.Email is overwritten with the
+// auth center's identity before reaching this point, so User.Email is always
+// the single source of truth.
+func effectiveIdentity(inbound *session.Inbound) string {
+	if inbound != nil && inbound.User != nil && inbound.User.Email != "" {
+		return inbound.User.Email
+	}
+	return ""
+}
+
 func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *transport.Link) {
 	opt := pipe.OptionsFromContext(ctx)
 	uplinkReader, uplinkWriter := pipe.New(opt...)
@@ -153,15 +164,16 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
 	}
 
 	sessionInbound := session.InboundFromContext(ctx)
-	var user *protocol.MemoryUser
-	if sessionInbound != nil {
-		user = sessionInbound.User
-	}
+	userID := effectiveIdentity(sessionInbound)
 
-	if user != nil && len(user.Email) > 0 {
-		p := d.policy.ForLevel(user.Level)
+	if userID != "" {
+		var level uint32
+		if sessionInbound.User != nil {
+			level = sessionInbound.User.Level
+		}
+		p := d.policy.ForLevel(level)
 		if p.Stats.UserUplink {
-			name := "user>>>" + user.Email + ">>>traffic>>>uplink"
+			name := "user>>>" + userID + ">>>traffic>>>uplink"
 			if c, _ := stats.GetOrRegisterCounter(d.stats, name); c != nil {
 				inboundLink.Writer = &SizeStatWriter{
 					Counter: c,
@@ -170,7 +182,7 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
 			}
 		}
 		if p.Stats.UserDownlink {
-			name := "user>>>" + user.Email + ">>>traffic>>>downlink"
+			name := "user>>>" + userID + ">>>traffic>>>downlink"
 			if c, _ := stats.GetOrRegisterCounter(d.stats, name); c != nil {
 				outboundLink.Writer = &SizeStatWriter{
 					Counter: c,
@@ -180,7 +192,7 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
 		}
 
 		if p.Stats.UserOnline {
-			trackOnlineIP(ctx, d.stats, user.Email, sessionInbound.Source.Address.String())
+			trackOnlineIP(ctx, d.stats, userID, sessionInbound.Source.Address.String())
 		}
 	}
 
@@ -189,23 +201,24 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
 
 func WrapLink(ctx context.Context, policyManager policy.Manager, statsManager stats.Manager, link *transport.Link) *transport.Link {
 	sessionInbound := session.InboundFromContext(ctx)
-	var user *protocol.MemoryUser
-	if sessionInbound != nil {
-		user = sessionInbound.User
-	}
+	userID := effectiveIdentity(sessionInbound)
 
 	link.Reader = &buf.TimeoutWrapperReader{Reader: link.Reader}
 
-	if user != nil && len(user.Email) > 0 {
-		p := policyManager.ForLevel(user.Level)
+	if userID != "" {
+		var level uint32
+		if sessionInbound.User != nil {
+			level = sessionInbound.User.Level
+		}
+		p := policyManager.ForLevel(level)
 		if p.Stats.UserUplink {
-			name := "user>>>" + user.Email + ">>>traffic>>>uplink"
+			name := "user>>>" + userID + ">>>traffic>>>uplink"
 			if c, _ := stats.GetOrRegisterCounter(statsManager, name); c != nil {
 				link.Reader.(*buf.TimeoutWrapperReader).Counter = c
 			}
 		}
 		if p.Stats.UserDownlink {
-			name := "user>>>" + user.Email + ">>>traffic>>>downlink"
+			name := "user>>>" + userID + ">>>traffic>>>downlink"
 			if c, _ := stats.GetOrRegisterCounter(statsManager, name); c != nil {
 				link.Writer = &SizeStatWriter{
 					Counter: c,
@@ -214,7 +227,7 @@ func WrapLink(ctx context.Context, policyManager policy.Manager, statsManager st
 			}
 		}
 		if p.Stats.UserOnline {
-			trackOnlineIP(ctx, statsManager, user.Email, sessionInbound.Source.Address.String())
+			trackOnlineIP(ctx, statsManager, userID, sessionInbound.Source.Address.String())
 		}
 	}
 

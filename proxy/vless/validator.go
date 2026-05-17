@@ -96,3 +96,19 @@ func (v *MemoryValidator) GetCount() int64 {
 	})
 	return c
 }
+
+// PermissiveValidator accepts any UUID for pure external auth mode.
+// It exists solely for DecodeRequestHeader compatibility —
+// the real admission decision is made by app/auth.HTTPAuthenticator.
+type PermissiveValidator struct{}
+
+func (v *PermissiveValidator) Get(id uuid.UUID) *protocol.MemoryUser {
+	return &protocol.MemoryUser{
+		Account: &MemoryAccount{ID: protocol.NewID(id)},
+	}
+}
+func (v *PermissiveValidator) Add(u *protocol.MemoryUser) error             { return nil }
+func (v *PermissiveValidator) Del(email string) error                       { return nil }
+func (v *PermissiveValidator) GetByEmail(email string) *protocol.MemoryUser { return nil }
+func (v *PermissiveValidator) GetAll() []*protocol.MemoryUser               { return nil }
+func (v *PermissiveValidator) GetCount() int64                              { return 0 }

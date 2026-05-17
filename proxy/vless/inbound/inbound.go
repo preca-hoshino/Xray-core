@@ -5,6 +5,7 @@ import (
 	"context"
 	gotls "crypto/tls"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"reflect"
 	"strconv"
@@ -12,8 +13,10 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/xtls/xray-core/app/auth"
 	"github.com/xtls/xray-core/app/dispatcher"
 	"github.com/xtls/xray-core/app/reverse"
+	"github.com/xtls/xray-core/app/trafficstats"
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/errors"
@@ -57,14 +60,22 @@ func init() {
 
 		c := config.(*Config)
 
-		validator := new(vless.MemoryValidator)
-		for _, user := range c.Users {
-			u, err := user.ToMemoryUser()
-			if err != nil {
-				return nil, errors.New("failed to get VLESS user").Base(err).AtError()
-			}
-			if err := validator.Add(u); err != nil {
-				return nil, errors.New("failed to initiate user").Base(err).AtError()
+		var validator vless.Validator
+		if len(c.Users) == 0 {
+			// Pure external auth mode — no local users configured.
+			// Use a permissive validator that accepts any UUID;
+			// the actual admission decision is made by app/auth.
+			validator = new(vless.PermissiveValidator)
+		} else {
+			validator = new(vless.MemoryValidator)
+			for _, user := range c.Users {
+				u, err := user.ToMemoryUser()
+				if err != nil {
+					return nil, errors.New("failed to get VLESS user").Base(err).AtError()
+				}
+				if err := validator.Add(u); err != nil {
+					return nil, errors.New("failed to initiate user").Base(err).AtError()
+				}
 			}
 		}
 
@@ -85,6 +96,11 @@ type Handler struct {
 	ctx                    context.Context
 	fallbacks              map[string]map[string]map[string]*Fallback // or nil
 	// regexps               map[string]*regexp.Regexp       // or nil
+
+	// External auth center integration (app/auth)
+	authenticator auth.Authenticator
+	// Connection tracking for kick capability (app/trafficstats)
+	connTracker trafficstats.ConnTracker
 }
 
 // New creates a new VLess inbound handler.
@@ -99,6 +115,21 @@ func New(ctx context.Context, config *Config, dc dns.Client, validator vless.Val
 		observer:               v.GetFeature(extension.ObservatoryType()),
 		defaultDispatcher:      v.GetFeature(routing.DispatcherType()).(routing.Dispatcher),
 		ctx:                    ctx,
+	}
+
+	// Optional: external auth center (app/auth)
+	if authFeature := v.GetFeature(auth.AuthenticatorType()); authFeature != nil {
+		handler.authenticator = authFeature.(auth.Authenticator)
+	}
+
+	// Pure external auth mode: app/auth is mandatory
+	if handler.authenticator == nil && len(config.Users) == 0 {
+		return nil, errors.New("VLESS: pure external auth mode requires app/auth to be configured")
+	}
+
+	// Optional: connection tracker for kick (app/trafficstats)
+	if ctFeature := v.GetFeature(trafficstats.ConnTrackerType()); ctFeature != nil {
+		handler.connTracker = ctFeature.(trafficstats.ConnTracker)
 	}
 
 	if config.Decryption != "" && config.Decryption != "none" {
@@ -529,6 +560,35 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 	}
 	errors.LogInfo(ctx, "received request for ", request.Destination())
 
+	// External auth center integration (app/auth) — protocol-agnostic
+	// If an authenticator is configured, delegate admission to the auth center.
+	// The client is unaffected; this HTTP call is entirely server-side.
+	var authID string
+	if h.authenticator != nil {
+		credential := newUUIDString(userSentID)
+		ok, id := h.authenticator.Authenticate(
+			connection.RemoteAddr(),
+			credential,
+			0, // VLESS has no TX rate negotiation
+		)
+		if !ok {
+			log.Record(&log.AccessMessage{
+				From:   connection.RemoteAddr(),
+				To:     request.Destination(),
+				Status: log.AccessRejected,
+				Reason: errors.New("external auth rejected"),
+			})
+			return errors.New("external auth rejected from ", connection.RemoteAddr())
+		}
+		// Fallback: if auth center returned empty ID, use the credential (UUID)
+		// so traffic stats and ConnTracker always have a valid identity.
+		authID = id
+		if authID == "" {
+			authID = credential
+		}
+		errors.LogInfo(ctx, "external auth accepted, authID=", authID)
+	}
+
 	inbound := session.InboundFromContext(ctx)
 	if inbound == nil {
 		panic("no inbound metadata")
@@ -536,6 +596,21 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 	inbound.Name = "vless"
 	inbound.User = request.User
 	inbound.VlessRoute = net.PortFromBytes(userSentID[6:8])
+
+	// Unified identity: overwrite User.Email with the external auth center's
+	// identity so ALL downstream consumers (stats, routing, logging, webhook,
+	// mux, etc.) see a single consistent user ID — no separate AuthIdentity
+	// field needed. In traditional mode (no external auth, authID == ""),
+	// request.User.Email already holds the locally configured email.
+	if authID != "" {
+		inbound.User.Email = authID
+	}
+
+	// Register connection for kick capability (app/trafficstats)
+	if h.connTracker != nil && authID != "" {
+		h.connTracker.RegisterConn(authID, connection)
+		defer h.connTracker.UnregisterConn(authID, connection)
+	}
 
 	account := request.User.Account.(*vless.MemoryAccount)
 
@@ -598,6 +673,9 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 	}
 
 	if request.Command != protocol.RequestCommandMux {
+		// request.User.Email already holds the correct identity:
+		//   - external auth mode → authID written above
+		//   - traditional mode   → locally configured email
 		ctx = log.ContextWithAccessMessage(ctx, &log.AccessMessage{
 			From:   connection.RemoteAddr(),
 			To:     request.Destination(),
@@ -637,6 +715,17 @@ func (h *Handler) Process(ctx context.Context, network net.Network, connection s
 		return errors.New("failed to dispatch request").Base(err)
 	}
 	return nil
+}
+
+// newUUIDString converts a 16-byte UUID to its canonical string representation.
+// Used by the external auth hook to pass the VLESS UUID as credential.
+func newUUIDString(b []byte) string {
+	if len(b) < 16 {
+		return ""
+	}
+	// Canonical UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 type Reverse struct {
